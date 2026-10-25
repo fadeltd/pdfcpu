@@ -1653,6 +1653,52 @@ func attributeEncryptionError(ctx *model.Context, err error) error {
 	return model.WithValidationErrorObject(err, ctx.Encrypt.ObjectNumber.Value())
 }
 
+// v4KeyLength returns the key length in bits for a V4 encrypt dict.
+// The encrypt dict "Length" is only defined for V2 and V3 (see 7.6.2, Table 20),
+// so if it is missing the key length comes from the crypt filter in use (see 7.6.6, Table 25).
+func v4KeyLength(ctx *model.Context, d types.Dict, l int) (int, error) {
+	length, err := encryptionIntegerEntry(ctx, d, "Length", "encrypt dict")
+	if err != nil {
+		return 0, err
+	}
+	if length != nil {
+		return l, nil
+	}
+
+	cf := d.DictEntry("CF")
+	for _, key := range []string{"StmF", "StrF"} {
+		name, _, err := ctx.DereferenceNameEntry(d, key)
+		if err != nil {
+			return 0, fmt.Errorf("%w: encrypt dict entry %q: %w", ErrMalformedEncryption, key, err)
+		}
+		if name == nil || name.Value() == "Identity" {
+			continue
+		}
+		filter := cf.DictEntry(name.Value())
+		if filter == nil {
+			continue
+		}
+		length, err := encryptionIntegerEntry(ctx, filter, "Length", "crypt filter")
+		if err != nil {
+			return 0, err
+		}
+		switch {
+		case length == nil:
+			return 128, nil
+		case *length >= 5 && *length <= 16:
+			// Standard security handler crypt filter lengths are in bytes.
+			return *length * 8, nil
+		case *length >= 40 && *length <= 128 && *length%8 == 0:
+			// Legacy bit count.
+			return *length, nil
+		default:
+			return 0, fmt.Errorf("%w: invalid CF length: %d", ErrMalformedEncryption, *length)
+		}
+	}
+
+	return 128, nil
+}
+
 func encryptionVersionParameters(ctx *model.Context, d types.Dict, pubKey bool) (int, int, int, error) {
 	v, err := validateEncryptV(ctx, d)
 	if err != nil {
@@ -1666,6 +1712,12 @@ func encryptionVersionParameters(ctx *model.Context, d types.Dict, pubKey bool) 
 
 	if v == 4 || v == 5 || v == 6 {
 		if err := prepareCryptFilters(ctx, d, v, pubKey); err != nil {
+			return 0, 0, 0, err
+		}
+	}
+
+	if v == 4 {
+		if l, err = v4KeyLength(ctx, d, l); err != nil {
 			return 0, 0, 0, err
 		}
 	}

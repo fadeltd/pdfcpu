@@ -17,6 +17,7 @@ limitations under the License.
 package test
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -179,6 +180,50 @@ func TestEncryption(t *testing.T) {
 		testEncryption(t, fileName, "aes", 40)
 		testEncryption(t, fileName, "aes", 128)
 		testEncryption(t, fileName, "aes", 256)
+	}
+}
+
+// TestDecryptV4WithoutEncryptLength verifies decryption of V4 files without a top level encrypt dict "Length",
+// which is optional for V4 where the key length comes from the crypt filter.
+func TestDecryptV4WithoutEncryptLength(t *testing.T) {
+	for _, alg := range []string{"rc4", "aes"} {
+		t.Run(alg, func(t *testing.T) {
+			aes := alg == "aes"
+			inFile := filepath.Join(inDir, "adobe_errata.pdf")
+			encFile := filepath.Join(outDir, "v4NoLength_"+alg+".pdf")
+
+			if err := api.EncryptFile(t.Context(), inFile, encFile, confForAlgorithm(aes, 128, "upw", "opw")); err != nil {
+				t.Fatalf("encrypt %s: %v\n", encFile, err)
+			}
+
+			// Rename the top level "Length" keeping the byte count so the xref table stays valid.
+			bb, err := os.ReadFile(encFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			old := []byte("/Filter/Standard/Length 128")
+			if n := bytes.Count(bb, old); n != 1 {
+				t.Fatalf("found %d encrypt dict \"Length\" entries, want 1", n)
+			}
+			bb = bytes.Replace(bb, old, []byte("/Filter/Standard/Lxngth 128"), 1)
+			if err := os.WriteFile(encFile, bb, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			for _, pw := range []struct{ upw, opw string }{{"upw", ""}, {"", "opw"}} {
+				outFile := filepath.Join(outDir, "v4NoLength_"+alg+"_decrypted.pdf")
+				if err := api.DecryptFile(t.Context(), encFile, outFile, confForAlgorithm(aes, 128, pw.upw, pw.opw)); err != nil {
+					t.Fatalf("decrypt %s using upw=%q opw=%q: %v\n", encFile, pw.upw, pw.opw, err)
+				}
+				if err := api.ValidateFile(t.Context(), outFile, nil, nil); err != nil {
+					t.Fatalf("validate %s: %v\n", outFile, err)
+				}
+			}
+
+			if err := api.DecryptFile(t.Context(), encFile, filepath.Join(outDir, "x.pdf"), confForAlgorithm(aes, 128, "wrong", "")); err == nil {
+				t.Fatalf("decrypt %s using wrong password succeeded\n", encFile)
+			}
+		})
 	}
 }
 

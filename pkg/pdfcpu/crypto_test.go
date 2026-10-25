@@ -800,6 +800,50 @@ func TestSupportedEncryptionResolvesIndirectIntegers(t *testing.T) {
 	}
 }
 
+// TestSupportedEncryptionV4KeyLengthFromCryptFilter checks that a V4 dict without a top level "Length"
+// takes the key length from its crypt filter instead of defaulting to 40 bits.
+func TestSupportedEncryptionV4KeyLengthFromCryptFilter(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		aes      bool
+		cfLength types.Object
+		want     int
+	}{
+		{"AESV2, CF length in bytes", true, types.Integer(16), 128},
+		{"AESV2, CF length in bits", true, types.Integer(128), 128},
+		{"AESV2, no CF length", true, nil, 128},
+		{"V2, CF length in bytes", false, types.Integer(16), 128},
+		{"V2, 40 bit CF length", false, types.Integer(5), 40},
+		{"V2, no CF length", false, nil, 128},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, err := model.NewContext(bytes.NewReader(nil), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			v := model.V17
+			ctx.XRefTable.HeaderVersion = &v
+			ctx.XRefTable.ValidationMode = model.ValidationRelaxed
+
+			d := newEncryptDict(false, tc.aes, 128, -4)
+			delete(d, "Length")
+			cf := d.DictEntry("CF").DictEntry("StdCF")
+			delete(cf, "Length")
+			if tc.cfLength != nil {
+				cf["Length"] = tc.cfLength
+			}
+
+			enc, err := supportedEncryption(ctx, d)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if enc.L != tc.want {
+				t.Fatalf("got L=%d, want %d", enc.L, tc.want)
+			}
+		})
+	}
+}
+
 func TestSupportedEncryptionRejectsInvalidIndirectInteger(t *testing.T) {
 	ctx, err := model.NewContext(bytes.NewReader(nil), nil)
 	if err != nil {
